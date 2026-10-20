@@ -413,6 +413,8 @@
   }
 
   var pin = { entered: '', mode: 'check', first: '', next: null };
+  var MAX_PIN_FAILS = 5;
+  var PIN_LOCK_MS = 5 * 60 * 1000;
 
   function pinModal(update, selectedIndex) {
     var dots = '';
@@ -427,6 +429,11 @@
   }
 
   function askPin(next) {
+    var wait = (state.pinLockedUntil || 0) - Date.now();
+    if (state.pinHash && wait > 0) {
+      toast('PIN kilitli', Math.ceil(wait / 60000) + ' dakika sonra tekrar deneyin.');
+      return;
+    }
     pin.entered = '';
     pin.first = '';
     pin.next = next;
@@ -464,9 +471,22 @@
     }
     hashPin(value).then(function (h) {
       if (h !== state.pinHash) {
-        toast('Yanlış PIN', '');
+        // Kumandayla tüm PIN'leri denemeyi zorlaştırmak için 5 yanlıştan sonra 5 dakika kilit.
+        state.pinFails = (state.pinFails || 0) + 1;
+        if (state.pinFails >= MAX_PIN_FAILS) {
+          state.pinFails = 0;
+          state.pinLockedUntil = Date.now() + PIN_LOCK_MS;
+          save();
+          popupBack();
+          toast('Çok fazla yanlış deneme', '5 dakika sonra tekrar deneyin.');
+          return;
+        }
+        save();
+        toast('Yanlış PIN', (MAX_PIN_FAILS - state.pinFails) + ' deneme hakkı kaldı.');
         return pinModal(true, 0);
       }
+      state.pinFails = 0;
+      save();
       popupBack();
       if (pin.next) setTimeout(pin.next, 300);
     });
