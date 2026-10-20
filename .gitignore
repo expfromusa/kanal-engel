@@ -1,0 +1,3 @@
+*.apk
+*.jks
+__pycache__/
