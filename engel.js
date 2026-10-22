@@ -12,11 +12,12 @@
   // ---------- Kayıt ----------
 
   function load() {
-    try {
-      var s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
-      if (s && Array.isArray(s.channels)) return s;
-    } catch (e) { }
-    return { channels: [], pinHash: null };
+    var s = null;
+    try { s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); } catch (e) { }
+    if (!s || !Array.isArray(s.channels)) s = { channels: [], pinHash: null };
+    if (!Array.isArray(s.words)) s.words = [];
+    s.searchOff = !!s.searchOff;
+    return s;
   }
 
   var state = load();
@@ -45,6 +46,29 @@
 
   function isBlocked(id, name) {
     return (id && ids[id]) || (name && names[norm(name)]) || false;
+  }
+
+  // Başlık eşleştirmesi: büyük/küçük harf ve Türkçe karakter farkı gözetmez ("Korkunç" = "korkunc").
+  var FOLD = { 'ç': 'c', 'ğ': 'g', 'ı': 'i', 'İ': 'i', 'ö': 'o', 'ş': 's', 'ü': 'u', 'â': 'a', 'î': 'i', 'û': 'u' };
+
+  function fold(s) {
+    return String(s || '').toLocaleLowerCase('tr-TR').replace(/[çğıİöşüâîû]/g, function (ch) { return FOLD[ch] || ch; }).replace(/\s+/g, ' ').trim();
+  }
+
+  // Oynatıcı yanıtında başlık gelmiyor; listelerde görülen başlıkları video kimliğiyle hatırlıyoruz.
+  var seenTitles = {};
+  var seenCount = 0;
+
+  function rememberTitle(videoId, title) {
+    if (!videoId || !title || seenTitles[videoId]) return;
+    if (++seenCount > 3000) { seenTitles = {}; seenCount = 1; }
+    seenTitles[videoId] = title;
+  }
+
+  function titleBlocked(title) {
+    if (!title || !state.words.length) return false;
+    var t = fold(title);
+    return state.words.some(function (w) { return w && t.indexOf(fold(w)) !== -1; });
   }
 
   // ---------- YouTube TV yardımcıları ----------
@@ -224,7 +248,9 @@
         if (!el || typeof el !== 'object') continue;
         if (itemKey(el)) {
           had = true;
-          if (all || isBlocked(findChannelId(el, 0), channelName(el))) node.splice(i, 1);
+          var title = itemTitle(el);
+          rememberTitle(itemVideoId(el), title);
+          if (all || isBlocked(findChannelId(el, 0), channelName(el)) || titleBlocked(title)) node.splice(i, 1);
           else has = true;
           continue;
         }
@@ -248,15 +274,45 @@
 
   function gatePlayer(r) {
     var vd = r.videoDetails;
-    if (!vd || !isBlocked(vd.channelId, vd.author)) return;
+    if (!vd) return;
+    var reason = isBlocked(vd.channelId, vd.author) ? 'Bu kanal engellendi.'
+      : titleBlocked(vd.title || seenTitles[vd.videoId]) ? 'Bu video engellendi.' : null;
+    if (!reason) return;
     r.playabilityStatus = {
       status: 'UNPLAYABLE',
-      reason: 'Bu kanal engellendi.',
+      reason: reason,
       playableInEmbed: false
     };
     delete r.streamingData;
     delete r.playerAds;
     delete r.adPlacements;
+  }
+
+  // İzleme sayfası yanıtında videonun başlığı var. Oynatıcı yanıtı başlığı bilmeden geldiyse
+  // (ör. doğrudan bağlantıyla açıldı) burada yakalanır: video durdurulur, ana sayfaya dönülür.
+  function gateWatchPage(watch) {
+    try {
+      var contents = watch.results.results.contents;
+      for (var i = 0; i < contents.length; i++) {
+        var sec = contents[i].itemSectionRenderer;
+        if (!sec) continue;
+        for (var j = 0; j < sec.contents.length; j++) {
+          var meta = sec.contents[j].videoMetadataRenderer;
+          if (!meta) continue;
+          var title = text(meta.title);
+          rememberTitle(meta.videoId, title);
+          if (titleBlocked(title)) {
+            setTimeout(function () {
+              var v = document.querySelector('video');
+              if (v) v.pause();
+              toast('Bu video engellendi', '');
+              goHome();
+            }, 300);
+          }
+          return;
+        }
+      }
+    } catch (e) { }
   }
 
   function menuItemsOf(item) {
@@ -297,7 +353,7 @@
               name: channelName(el),
               title: itemTitle(el)
             }));
-            items.push(menuEntry('Engelli kanallar (ebeveyn)', 'KE_MANAGE', null));
+            items.push(menuEntry('Ebeveyn ayarları', 'KE_MANAGE', null));
           }
           continue;
         }
@@ -313,15 +369,153 @@
 
   var stats = { parsed: 0, processed: 0 };
 
+  // ---------- Arama ----------
+
+  // "Kelime ekle": ebeveyn arama kutusuna kelimeyi yazıp ARA'ya basar; arama yapılmaz, kelime listeye eklenir.
+  var capture = { active: false, timer: null };
+
+  function isSearchResponse(r) {
+    return r.estimatedResults !== undefined || r.originalQuery !== undefined || r.refinements !== undefined;
+  }
+
+  // Arama ekranı sorguyu ne adreste ne de yanıtta taşıyor; en güvenilir kaynak arama kutusunun metni.
+  function searchQueryOf(r) {
+    if (typeof r.originalQuery === 'string') return r.originalQuery;
+    var m = /[?&]q=([^&]+)/.exec(location.hash || '');
+    if (m) return decodeURIComponent(m[1].replace(/\+/g, ' '));
+    var box = document.querySelector('ytlr-search-text-box') || document.querySelector('ytlr-search-bar');
+    var t = box ? String(box.textContent || '').replace(/\s+/g, ' ').trim() : '';
+    return t === 'Arama' || t === 'Search' ? '' : t;
+  }
+
+  function clearResults(r) {
+    if (r.contents) {
+      // Sayfa iskeleti kalsın ama içindeki satırlar boşalsın.
+      filterTree(r.contents, 0, true);
+    }
+    delete r.refinements;
+  }
+
+  function isSearchCommand(cmd) {
+    if (!cmd || typeof cmd !== 'object') return false;
+    if (cmd.searchEndpoint) return true;
+    var list = cmd.commandExecutorCommand && cmd.commandExecutorCommand.commands;
+    return Array.isArray(list) && list.some(isSearchCommand);
+  }
+
+  function searchCommandQuery(cmd) {
+    if (!cmd || typeof cmd !== 'object') return '';
+    if (cmd.searchEndpoint) return cmd.searchEndpoint.query || '';
+    var list = (cmd.commandExecutorCommand && cmd.commandExecutorCommand.commands) || [];
+    for (var i = 0; i < list.length; i++) {
+      var q = searchCommandQuery(list[i]);
+      if (q) return q;
+    }
+    return '';
+  }
+
+  // Ana sayfanın üstündeki "Arama" kutusu arama kapalıyken gizlenir (kelime ekleme sırasında görünür).
+  var searchStyle = null;
+
+  function applySearchStyle() {
+    var hide = state.searchOff && !capture.active;
+    if (!searchStyle) {
+      searchStyle = document.createElement('style');
+      (document.head || document.documentElement).appendChild(searchStyle);
+    }
+    searchStyle.textContent = hide ? 'ytlr-search-bar{display:none!important}' : '';
+  }
+
+  function goHome() {
+    resolve({ browseEndpoint: { browseId: 'default' } });
+  }
+
+  function startCapture() {
+    capture.active = true;
+    clearTimeout(capture.timer);
+    // Ebeveyn vazgeçerse arama kendiliğinden yeniden kapanır.
+    capture.timer = setTimeout(function () { capture.active = false; applySearchStyle(); }, 3 * 60 * 1000);
+    applySearchStyle();
+    popupBack();
+    setTimeout(function () {
+      toast('Kelime ekle', 'Engellenecek kelimeyi yazıp ARA\'ya basın.');
+      resolve({ searchEndpoint: { query: '' } });
+    }, 300);
+  }
+
+  function finishCapture(query) {
+    var w = String(query || '').replace(/\s+/g, ' ').trim();
+    if (!w) return false;
+    capture.active = false;
+    clearTimeout(capture.timer);
+    applySearchStyle();
+    if (!state.words.some(function (x) { return fold(x) === fold(w); })) {
+      state.words.push(w);
+      save();
+    }
+    toast('Kelime engellendi', '"' + w + '" geçen videolar artık görünmeyecek.');
+    setTimeout(goHome, 400);
+    return true;
+  }
+
+  // Arama sayfasına başka bir yoldan (ör. sesli arama) gelinirse: kayıt modunda kelimeyi al,
+  // arama kapalıysa ana sayfaya dön.
+  function onHashChange() {
+    var hash = location.hash || '';
+    if (hash.indexOf('#/search') !== 0) return;
+    var m = /[?&]q=([^&]*)/.exec(hash);
+    var q = m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : '';
+    if (capture.active) {
+      if (q) finishCapture(q);
+      return;
+    }
+    if (state.searchOff) {
+      toast('Arama kapalı', 'Arama ebeveyn tarafından kapatıldı.');
+      goHome();
+    }
+  }
+
+  window.addEventListener('hashchange', onHashChange);
+  applySearchStyle();
+
+  function stripGuideSearch(r) {
+    var items = r.items;
+    if (!state.searchOff || !Array.isArray(items)) return;
+    items.forEach(function (it) {
+      var section = it && it.guideSectionRenderer;
+      if (!section || !Array.isArray(section.items)) return;
+      section.items = section.items.filter(function (e) {
+        var ep = e && e.guideEntryRenderer && e.guideEntryRenderer.navigationEndpoint;
+        return !(ep && ep.searchEndpoint);
+      });
+    });
+  }
+
   function processResponse(r) {
     stats.parsed++;
     if (!r || typeof r !== 'object' || Array.isArray(r)) return;
+    try { stripGuideSearch(r); } catch (e) { console.error(TAG, e); }
     // Sadece InnerTube yanıtları (oynatıcı, sayfa, devam, arama).
     if (!r.responseContext && !r.videoDetails && !r.contents && !r.continuationContents && !r.onResponseReceivedActions) return;
     stats.processed++;
     try {
       gatePlayer(r);
-      if (state.channels.length) filterTree(r, 0, !!blockedPageId(r));
+      if (isSearchResponse(r)) {
+        var q = searchQueryOf(r);
+        if (capture.active) {
+          // Kelime ekleme modunda arama yapılmaz; yazılan kelime listeye girer.
+          if (q && finishCapture(q)) clearResults(r);
+        } else if (state.searchOff || titleBlocked(q)) {
+          // Arama kapalıysa ya da aranan şey engelli bir kelime içeriyorsa sonuç gösterilmez.
+          clearResults(r);
+        }
+      }
+      var watch = r.contents && r.contents.singleColumnWatchNextResults;
+      if (watch) gateWatchPage(watch);
+      if (state.channels.length || state.words.length) filterTree(r, 0, !!blockedPageId(r));
+      // İlgili videolar tamamen boşalırsa izleme sayfası açılmıyor; TizenTube'un yaptığı gibi boş bir öğe bırak.
+      var pivot = watch && watch.pivot && watch.pivot.sectionListRenderer;
+      if (pivot && Array.isArray(pivot.contents) && !pivot.contents.length) pivot.contents = [{}];
       addMenus(r, 0);
     } catch (e) {
       console.error(TAG, 'yanıt işlenemedi', e);
@@ -497,13 +691,37 @@
     pinModal(true, 10);
   }
 
-  function manageModal(update) {
-    var items = state.channels.map(function (c, i) {
-      return button(c.name || c.id, 'Engeli kaldırmak için seçin', 'KE_UNBLOCK', i);
+  function manageModal(update, selectedIndex) {
+    var items = [
+      button(state.searchOff ? 'Arama: KAPALI' : 'Arama: AÇIK', state.searchOff ? 'Açmak için seçin' : 'Kapatmak için seçin', 'KE_SEARCH_TOGGLE', null),
+      button('Kelime ekle', 'Başlığında bu kelime geçen videoları engeller', 'KE_WORD_ADD', null)
+    ];
+    state.words.forEach(function (w, i) {
+      items.push(button('Kelime: ' + w, 'Kaldırmak için seçin', 'KE_WORD_DEL', i));
     });
-    if (!items.length) items.push(button('Engelli kanal yok', null, 'KE_NOOP', null));
+    state.channels.forEach(function (c, i) {
+      items.push(button('Kanal: ' + (c.name || c.id), 'Engeli kaldırmak için seçin', 'KE_UNBLOCK', i));
+    });
     items.push(button('PIN\'i değiştir', null, 'KE_PIN_CHANGE', null));
-    showModal('ke-manage', 'Engelli kanallar', state.channels.length + ' kanal engelli', items, 0, update);
+    var summary = state.channels.length + ' kanal, ' + state.words.length + ' kelime engelli';
+    showModal('ke-manage', 'Ebeveyn ayarları', summary, items, selectedIndex || 0, update);
+  }
+
+  function toggleSearch() {
+    state.searchOff = !state.searchOff;
+    save();
+    applySearchStyle();
+    toast(state.searchOff ? 'Arama kapatıldı' : 'Arama açıldı', state.searchOff ? 'Kenar çubuğundaki arama, uygulama yeniden açılınca kaybolur.' : '');
+    manageModal(true, 0);
+  }
+
+  function removeWord(i) {
+    var w = state.words[i];
+    if (w === undefined) return;
+    state.words.splice(i, 1);
+    save();
+    toast('Kelime kaldırıldı', w);
+    manageModal(true, 1);
   }
 
   function unblock(i) {
@@ -522,6 +740,9 @@
       case 'KE_PIN_DIGIT': pinDigit(parameters); break;
       case 'KE_PIN_DEL': pinDel(); break;
       case 'KE_UNBLOCK': unblock(parameters); break;
+      case 'KE_SEARCH_TOGGLE': toggleSearch(); break;
+      case 'KE_WORD_ADD': startCapture(); break;
+      case 'KE_WORD_DEL': removeWord(parameters); break;
       case 'KE_PIN_CHANGE':
         popupBack();
         setTimeout(function () {
@@ -566,6 +787,14 @@
     var current = inst.resolveCommand;
     if (!current || current.__ke) return;
     var wrapped = function (cmd, extra) {
+      if (isSearchCommand(cmd)) {
+        var q = searchCommandQuery(cmd);
+        if (capture.active && q && finishCapture(q)) return true;
+        if (state.searchOff && !capture.active) {
+          toast('Arama kapalı', 'Arama ebeveyn tarafından kapatıldı.');
+          return true;
+        }
+      }
       var ca = customActionOf(cmd);
       if (ca) {
         try { if (handle(ca.action, ca.parameters)) return true; } catch (e) { console.error(TAG, e); return true; }
