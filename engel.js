@@ -379,10 +379,14 @@
   }
 
   // Arama ekranı sorguyu ne adreste ne de yanıtta taşıyor; en güvenilir kaynak arama kutusunun metni.
+  function safeDecode(s) {
+    try { return decodeURIComponent(s.replace(/\+/g, ' ')); } catch (e) { return s; }
+  }
+
   function searchQueryOf(r) {
     if (typeof r.originalQuery === 'string') return r.originalQuery;
     var m = /[?&]q=([^&]+)/.exec(location.hash || '');
-    if (m) return decodeURIComponent(m[1].replace(/\+/g, ' '));
+    if (m) return safeDecode(m[1]);
     var box = document.querySelector('ytlr-search-text-box') || document.querySelector('ytlr-search-bar');
     var t = box ? String(box.textContent || '').replace(/\s+/g, ' ').trim() : '';
     return t === 'Arama' || t === 'Search' ? '' : t;
@@ -434,7 +438,7 @@
     capture.active = true;
     clearTimeout(capture.timer);
     // Ebeveyn vazgeçerse arama kendiliğinden yeniden kapanır.
-    capture.timer = setTimeout(function () { capture.active = false; applySearchStyle(); }, 3 * 60 * 1000);
+    capture.timer = setTimeout(function () { capture.active = false; applySearchStyle(); }, 90 * 1000);
     applySearchStyle();
     popupBack();
     setTimeout(function () {
@@ -464,7 +468,7 @@
     var hash = location.hash || '';
     if (hash.indexOf('#/search') !== 0) return;
     var m = /[?&]q=([^&]*)/.exec(hash);
-    var q = m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : '';
+    var q = m ? safeDecode(m[1]) : '';
     if (capture.active) {
       if (q) finishCapture(q);
       return;
@@ -498,28 +502,33 @@
     // Sadece InnerTube yanıtları (oynatıcı, sayfa, devam, arama).
     if (!r.responseContext && !r.videoDetails && !r.contents && !r.continuationContents && !r.onResponseReceivedActions) return;
     stats.processed++;
-    try {
-      gatePlayer(r);
-      if (isSearchResponse(r)) {
-        var q = searchQueryOf(r);
-        if (capture.active) {
-          // Kelime ekleme modunda arama yapılmaz; yazılan kelime listeye girer.
-          if (q && finishCapture(q)) clearResults(r);
-        } else if (state.searchOff || titleBlocked(q)) {
-          // Arama kapalıysa ya da aranan şey engelli bir kelime içeriyorsa sonuç gösterilmez.
-          clearResults(r);
-        }
+    // Her adım ayrı korunur: birindeki hata diğer engelleri atlatmasın.
+    function step(fn) { try { fn(); } catch (e) { console.error(TAG, 'yanıt işlenemedi', e); } }
+    step(function () { gatePlayer(r); });
+    step(function () {
+      if (!isSearchResponse(r)) return;
+      var q = '';
+      try { q = searchQueryOf(r); } catch (e) { }
+      if (capture.active) {
+        // Kelime ekleme modunda arama yapılmaz; yazılan kelime listeye girer, sonuç hiç gösterilmez.
+        if (q) finishCapture(q);
+        clearResults(r);
+      } else if (state.searchOff || titleBlocked(q)) {
+        // Arama kapalıysa ya da aranan şey engelli bir kelime içeriyorsa sonuç gösterilmez.
+        clearResults(r);
       }
-      var watch = r.contents && r.contents.singleColumnWatchNextResults;
-      if (watch) gateWatchPage(watch);
+    });
+    var watch = r.contents && r.contents.singleColumnWatchNextResults;
+    if (watch) step(function () { gateWatchPage(watch); });
+    step(function () {
       if (state.channels.length || state.words.length) filterTree(r, 0, !!blockedPageId(r));
+    });
+    step(function () {
       // İlgili videolar tamamen boşalırsa izleme sayfası açılmıyor; TizenTube'un yaptığı gibi boş bir öğe bırak.
       var pivot = watch && watch.pivot && watch.pivot.sectionListRenderer;
       if (pivot && Array.isArray(pivot.contents) && !pivot.contents.length) pivot.contents = [{}];
-      addMenus(r, 0);
-    } catch (e) {
-      console.error(TAG, 'yanıt işlenemedi', e);
-    }
+    });
+    step(function () { addMenus(r, 0); });
   }
 
   // ---------- Kanal kimliğini /next ile bulma ----------
