@@ -4,7 +4,7 @@ TizenTube Cobalt (Android TV) için kanal engelleme eklentisi.
 
 - Bir videoda OK'a basılı tutun → **Kanalı engelle**. O kanalın videoları ana sayfa, arama ve önerilerden kaybolur; doğrudan açılsa da oynatılmaz.
 - **Ebeveyn ayarları** (4 haneli PIN, ilk açılışta belirlenir; 5 yanlış denemede 5 dakika kilit):
-  - **Arama: AÇIK/KAPALI** — kapalıyken kenar çubuğundaki arama ve ana sayfadaki arama kutusu kaybolur, arama ekranı açılmaz.
+  - **Arama: AÇIK/KAPALI** (varsayılan KAPALI) — kapalıyken kenar çubuğundaki arama ve ana sayfadaki arama kutusu kaybolur, arama ekranı açılmaz.
   - **Kelime ekle** — arama kutusuna yazılan kelime aranmaz, listeye eklenir. Başlığında bu kelime geçen videolar
     listelerden kaybolur ve oynatılmaz; bu kelimeyi içeren aramalar sonuç vermez. Büyük/küçük harf ve Türkçe karakter farkı gözetilmez.
   - Engelli kelimeleri ve kanalları kaldırma, PIN değiştirme.

@@ -16,7 +16,8 @@
     try { s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); } catch (e) { }
     if (!s || !Array.isArray(s.channels)) s = { channels: [], pinHash: null };
     if (!Array.isArray(s.words)) s.words = [];
-    s.searchOff = !!s.searchOff;
+    // Arama varsayılan olarak kapalı; yalnızca ebeveyn PIN'le açarsa açık kalır.
+    s.searchOff = s.searchChosen ? !!s.searchOff : true;
     return s;
   }
 
@@ -718,6 +719,7 @@
 
   function toggleSearch() {
     state.searchOff = !state.searchOff;
+    state.searchChosen = true;
     save();
     applySearchStyle();
     toast(state.searchOff ? 'Arama kapatıldı' : 'Arama açıldı', state.searchOff ? 'Kenar çubuğundaki arama, uygulama yeniden açılınca kaybolur.' : '');
