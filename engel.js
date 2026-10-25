@@ -477,23 +477,7 @@
     if (state.searchOff) {
       toast('Arama kapalı', 'Arama ebeveyn tarafından kapatıldı.');
       goHome();
-      setTimeout(debugSearchBox, 2500);
     }
-  }
-
-  // GEÇİCİ: TV'deki yeni arayüzde arama kutusunun öğe adlarını görmek için.
-  function debugSearchBox() {
-    var out = [];
-    var all = document.querySelectorAll('*');
-    for (var i = 0; i < all.length && out.length < 2; i++) {
-      var e = all[i];
-      if (e.children.length === 0 && /^\s*Arama\s*$/.test(e.textContent || '')) {
-        var chain = [];
-        for (var p = e, d = 0; p && d < 9; p = p.parentElement, d++) chain.push(p.tagName.toLowerCase());
-        out.push(chain.join('<'));
-      }
-    }
-    toast('KE-DEBUG', out.join(' || ') || 'bulunamadi');
   }
 
   window.addEventListener('hashchange', onHashChange);
