@@ -22,6 +22,7 @@
   }
 
   add(UPSTREAM + '?v=' + v, function () {
-    add(BASE + 'engel.js?v=' + Math.floor(v / 3600000));
+    // Önbellek anahtarı 10 dakikada bir değişir; güncellemeler en geç 10 dakikada TV'ye ulaşır.
+    add(BASE + 'engel.js?v=' + Math.floor(v / 600000));
   });
 })();
